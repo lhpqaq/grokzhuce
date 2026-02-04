@@ -11,6 +11,22 @@
 - 注册完成后自动清理临时邮箱
 - 支持多线程并发注册
 
+## 文件说明
+
+| 文件 | 说明 |
+|------|------|
+| `grok.py` | 主程序，批量注册入口 |
+| `TurnstileSolver.bat` | Turnstile Solver 启动脚本 |
+| `api_solver.py` | Turnstile 验证码解决器 |
+| `browser_configs.py` | 浏览器指纹配置 |
+| `db_results.py` | 验证结果存储 |
+| `g/email_service.py` | 临时邮箱服务（freemail API） |
+| `g/turnstile_service.py` | Turnstile 验证服务 |
+| `g/user_agreement_service.py` | 用户协议同意服务 |
+| `g/nsfw_service.py` | NSFW 设置服务 |
+| `.env.example` | 环境变量模板 |
+| `requirements.txt` | Python 依赖列表 |
+
 ## 依赖
 
 - [freemail](https://github.com/user/freemail) - 临时邮箱服务（需自行部署）
