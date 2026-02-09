@@ -1,5 +1,6 @@
 """邮箱服务类 - 适配 freemail API"""
 import os
+import re
 import time
 import requests
 from dotenv import load_dotenv
@@ -33,23 +34,45 @@ class EmailService:
             return None, None
 
     def fetch_verification_code(self, email, max_attempts=30):
-        """轮询获取验证码 GET /api/emails?mailbox=xxx"""
-        for _ in range(max_attempts):
+        """轮询获取验证码：先查收件箱拿邮件id，再请求邮件详情从html中提取验证码"""
+        for attempt in range(max_attempts):
             try:
+                # 第一步：查询收件箱列表
                 res = requests.get(
                     f"{self.base_url}/api/emails",
                     params={"mailbox": email},
                     headers=self.headers,
-                    timeout=10
+                    timeout=15
                 )
                 if res.status_code == 200:
                     emails = res.json()
-                    if emails and emails[0].get("verification_code"):
-                        code = emails[0]["verification_code"]
-                        return code.replace("-", "")
-            except:
-                pass
-            time.sleep(1)
+                    if emails and len(emails) > 0:
+                        # 找到来自 x.ai 的邮件
+                        for mail in emails:
+                            mail_id = mail.get("id")
+                            if not mail_id:
+                                continue
+                            # 第二步：请求邮件详情
+                            detail_res = requests.get(
+                                f"{self.base_url}/api/email/{mail_id}",
+                                headers=self.headers,
+                                timeout=15
+                            )
+                            if detail_res.status_code == 200:
+                                detail = detail_res.json()
+                                html = detail.get("html_content", "")
+                                # 从 html 中提取验证码 (格式: XXX-XXX)
+                                match = re.search(r'font-weight:\s*bold[^>]*>([A-Z0-9]{3}-[A-Z0-9]{3})<', html)
+                                if match:
+                                    code = match.group(1)
+                                    print(f"[+] 获取到验证码: {code} for {email}")
+                                    return code.replace("-", "")
+                        print(f"[+] 邮件中未找到验证码，继续等待... for {email}")
+                    else:
+                        print(f"[+] 邮箱暂无邮件，继续等待... for {email}")
+            except Exception as e:
+                print(f"[-] 获取验证码异常: {e}")
+            time.sleep(3)
         return None
 
     def delete_email(self, address):

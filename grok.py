@@ -53,6 +53,7 @@ start_time = time.time()
 target_count = 100
 stop_event = threading.Event()
 output_file = None
+output_file_sso_only = None
 
 def generate_random_name() -> str:
     length = random.randint(4, 6)
@@ -93,7 +94,9 @@ def verify_email_code_grpc(session, email, code):
     headers = {"content-type": "application/grpc-web+proto", "x-grpc-web": "1", "x-user-agent": "connect-es/2.1.1", "origin": site_url, "referer": f"{site_url}/sign-up?redirect=grok-com"}
     try:
         res = session.post(url, data=data, headers=headers, timeout=15)
-        # print(f"[debug] {email} 验证响应状态: {res.status_code}, 内容长度: {len(res.content)}")
+        print(f"[debug] {email} 验证响应状态: {res.status_code}, 内容长度: {len(res.content)}")
+
+        # print(f"[debug] {email} 验证响应内容 (前100字节): {res.content[:100]}")
         return res.status_code == 200
     except Exception as e:
         print(f"[-] {email} 验证验证码异常: {e}")
@@ -160,6 +163,7 @@ def register_single_thread():
 
                 # Step 2: 获取验证码
                 verify_code = email_service.fetch_verification_code(email)
+                print(f"[debug] {email} 获取到的验证码: {verify_code}")
                 if not verify_code:
                     email_service.delete_email(email)
                     current_email = None
@@ -181,6 +185,7 @@ def register_single_thread():
                     token = turnstile_service.get_response(task_id)
 
                     if not token or token == "CAPTCHA_FAIL":
+                        print(f"[-] {email} 获取 Turnstile 令牌失败")
                         continue
 
                     headers = {
@@ -199,10 +204,11 @@ def register_single_thread():
 
                     with post_lock:
                         res = session.post(f"{site_url}/sign-up", json=payload, headers=headers)
-
+                    print(f"[debug] {email} 注册响应状态: {res.status_code}, 内容长度: {len(res.text)}")
                     if res.status_code == 200:
                         match = re.search(r'(https://[^" \s]+set-cookie\?q=[^:" \s]+)1:', res.text)
                         if not match:
+                            print(f"[-] {email} 注册响应中未找到验证链接")
                             email_service.delete_email(email)
                             current_email = None
                             break
@@ -212,6 +218,7 @@ def register_single_thread():
                             sso = session.cookies.get("sso")
                             sso_rw = session.cookies.get("sso-rw")
                             if not sso:
+                                print(f"[-] {email} 未获取到 SSO Cookie")
                                 email_service.delete_email(email)
                                 current_email = None
                                 break
@@ -224,25 +231,29 @@ def register_single_thread():
                             )
                             tos_hex = tos_result.get("hex_reply") or ""
                             if not tos_result.get("ok") or not tos_hex:
+                                print(f"[-] {email} 接受用户协议失败")
                                 email_service.delete_email(email)
                                 current_email = None
                                 break
 
-                            nsfw_result = nsfw_service.enable_nsfw(
-                                sso=sso,
-                                sso_rw=sso_rw or "",
-                                impersonate=impersonate_fingerprint,
-                                user_agent=account_user_agent,
-                            )
-                            nsfw_hex = nsfw_result.get("hex_reply") or ""
-                            if not nsfw_result.get("ok") or not nsfw_hex:
-                                email_service.delete_email(email)
-                                current_email = None
-                                break
+                            # nsfw_result = nsfw_service.enable_nsfw(
+                            #     sso=sso,
+                            #     sso_rw=sso_rw or "",
+                            #     impersonate=impersonate_fingerprint,
+                            #     user_agent=account_user_agent,
+                            # )
+                            # nsfw_hex = nsfw_result.get("hex_reply") or ""
+                            # print(f"[debug] {email} NSFW 响应 Hex: {nsfw_hex}")
+                            # print(f"[debug] {email} NSFW 响应内容: {nsfw_result}")
+                            # if not nsfw_result.get("ok") or not nsfw_hex:
+                            #     print(f"[-] {email} 开启 NSFW 失败")
+                            #     email_service.delete_email(email)
+                            #     current_email = None
+                            #     break
 
-                            # 立即进行二次验证 (enable_unhinged)
-                            unhinged_result = nsfw_service.enable_unhinged(sso)
-                            unhinged_ok = unhinged_result.get("ok", False)
+                            # # 立即进行二次验证 (enable_unhinged)
+                            # unhinged_result = nsfw_service.enable_unhinged(sso)
+                            # unhinged_ok = unhinged_result.get("ok", False)
 
                             with file_lock:
                                 global success_count
@@ -254,7 +265,15 @@ def register_single_thread():
                                     current_email = None
                                     break
                                 try:
-                                    with open(output_file, "a") as f: f.write(sso + "\n")
+                                    account_info = f"{email}:{password}:{sso}"
+                                    # 写入完整信息文件
+                                    with open(output_file, "a") as f:
+                                        f.write(account_info + "\n")
+                                        f.flush()
+                                    # 写入纯SSO文件
+                                    with open(output_file_sso_only, "a") as f:
+                                        f.write(sso + "\n")
+                                        f.flush()
                                 except Exception as write_err:
                                     print(f"[-] 写入文件失败: {write_err}")
                                     email_service.delete_email(email)
@@ -262,7 +281,8 @@ def register_single_thread():
                                     break
                                 success_count += 1
                                 avg = (time.time() - start_time) / success_count
-                                nsfw_tag = "✓" if unhinged_ok else "✗"
+                                nsfw_tag = "✗"
+                                # nsfw_tag = "✓" if unhinged_ok else "✗"
                                 print(f"[✓] 注册成功: {success_count}/{target_count} | {email} | SSO: {sso[:15]}... | 平均: {avg:.1f}s | NSFW: {nsfw_tag}")
                                 email_service.delete_email(email)
                                 current_email = None
@@ -331,16 +351,18 @@ def main():
         total = int(input("注册数量 (默认100): ").strip() or 100)
     except: total = 100
 
-    global target_count, output_file
+    global target_count, output_file, output_file_sso_only
     target_count = max(1, total)
 
     from datetime import datetime
     os.makedirs("keys", exist_ok=True)
     timestamp = datetime.now().strftime("%Y%m%d_%H%M%S")
-    output_file = f"keys/grok_{timestamp}_{target_count}.txt"
+    output_file = f"keys/grok_{timestamp}_{target_count}_full.txt"
+    output_file_sso_only = f"keys/grok_{timestamp}_{target_count}_sso.txt"
 
     print(f"[*] 启动 {t} 个线程，目标 {target_count} 个")
-    print(f"[*] 输出: {output_file}")
+    print(f"[*] 完整信息: {output_file}")
+    print(f"[*] 纯SSO: {output_file_sso_only}")
     with concurrent.futures.ThreadPoolExecutor(max_workers=t) as executor:
         futures = [executor.submit(register_single_thread) for _ in range(t)]
         concurrent.futures.wait(futures)
